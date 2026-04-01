@@ -569,103 +569,96 @@ export async function parsePdf(file: File, onProgress?: (progress: number) => vo
     }
 
     const chapters: Chapter[] = [];
-    // 限制最多50页以提高性能
-    const totalPages = Math.min(pdf.numPages, 50);
+    const totalPages = pdf.numPages;
     console.log('[PDF] 开始解析章节，将处理:', totalPages, '页');
 
+    // 快速渲染所有页面内容
     for (let i = 1; i <= totalPages; i++) {
       try {
         const page = await pdf.getPage(i);
-        let text = '';
+        let content = '';
 
-        // 尝试提取文本内容
+        // 首先尝试提取文本
+        let hasText = false;
         try {
           const textContent = await page.getTextContent();
-          console.log(`[PDF] 第 ${i} 页 textContent:`, textContent);
 
-          // PDF.js v5 使用 items 数组
-          if (textContent.items && Array.isArray(textContent.items)) {
-            // 处理每个文本项
+          if (textContent.items && Array.isArray(textContent.items) && textContent.items.length > 0) {
             const textItems = textContent.items
               .filter((item: any) => item && item.str !== undefined)
               .map((item: any) => item.str || '');
 
-            // 连接文本项，在项目之间添加适当的空格
-            text = textItems.join('');
+            const text = textItems.join('');
 
-            // 尝试根据位置信息保留换行
-            if (textContent.items.length > 0) {
-              let y = -1;
+            // 如果提取到的文本足够多，认为是文本型PDF
+            if (text.length > 20) {
+              hasText = true;
+
+              // 根据位置信息保留换行
               let formattedText = '';
-              textContent.items.forEach((item: any) => {
-                if (item.str) {
-                  // 如果 y 坐标发生显著变化，添加换行
-                  if (y !== -1 && Math.abs((item.transform[5] || 0) - y) > 10) {
-                    formattedText += '\n';
+              if (textContent.items.length > 0) {
+                let y = -1;
+                textContent.items.forEach((item: any) => {
+                  if (item.str) {
+                    if (y !== -1 && Math.abs((item.transform[5] || 0) - y) > 10) {
+                      formattedText += '\n';
+                    }
+                    formattedText += item.str;
+                    y = item.transform[5] || 0;
                   }
-                  formattedText += item.str;
-                  y = item.transform[5] || 0;
-                }
-              });
-              if (formattedText) {
-                text = formattedText;
+                });
+              }
+
+              const finalText = formattedText || text;
+              // 转换为HTML段落格式
+              const paragraphs = finalText.split('\n').map((p: string) => p.trim()).filter((p: string) => p);
+              if (paragraphs.length > 0) {
+                content = paragraphs.map((p: string) => `<p style="margin-bottom:0.8em;text-indent:2em;">${escapeHtml(p)}</p>`).join('');
+              } else {
+                content = `<p style="margin-bottom:0.8em;text-indent:2em;">${escapeHtml(finalText)}</p>`;
               }
             }
-          } else if (textContent.textContent) {
-            // 备用：直接使用 textContent 属性
-            text = textContent.textContent || '';
           }
-
-          console.log(`[PDF] 第 ${i} 页提取文本长度:`, text.length);
         } catch (textError) {
-          console.error(`[PDF] 第 ${i} 页文本提取失败:`, textError);
-          text = '';
+          console.warn(`[PDF] 第 ${i} 页文本提取失败，将尝试渲染为图片:`, textError);
         }
 
-        // 如果没有文本，可能是图片型 PDF
-        if (!text.trim()) {
-          console.warn(`[PDF] 第 ${i} 页没有可提取的文本，可能是图片型 PDF`);
-          // 尝试将页面渲染为图片
-          try {
-            const viewport = page.getViewport({ scale: 1.5 });
-            const canvas = document.createElement('canvas');
-            const context = canvas.getContext('2d');
-            if (context) {
-              canvas.width = viewport.width;
-              canvas.height = viewport.height;
-              await page.render({ canvas, canvasContext: context, viewport }).promise;
-              const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
-              text = `<div style="text-align:center;"><img src="${imageDataUrl}" style="max-width:100%;height:auto;" alt="PDF Page ${i}"/></div>`;
-            }
-          } catch (renderError) {
-            console.error(`[PDF] 第 ${i} 页渲染失败:`, renderError);
-            text = '<div style="padding: 40px; text-align: center; color: #999;">此页面无法显示（可能是扫描版 PDF）</div>';
+        // 如果没有文本或文本很少，渲染为图片
+        if (!hasText) {
+          const viewport = page.getViewport({ scale: 1.2 });
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+
+          if (context) {
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            await page.render({ canvas, canvasContext: context, viewport }).promise;
+            // 使用JPEG格式获得更好的兼容性
+            const imageDataUrl = canvas.toDataURL('image/jpeg', 0.85);
+            content = `<div style="text-align:center;"><img src="${imageDataUrl}" style="max-width:100%;height:auto;" alt="Page ${i}" loading="lazy"/></div>`;
+          } else {
+            content = '<div style="padding:40px;text-align:center;color:#999;">无法渲染此页面</div>';
           }
-        } else {
-          // 有文本内容，转换为 HTML
-          text = escapeHtml(text).replace(/\n/g, '<br/>').replace(/\s+/g, ' ');
         }
 
         chapters.push({
           id: i - 1,
           title: `第 ${i} 页`,
-          content: `<div class="pdf-page" style="padding: 20px; min-height: 800px;">${text}</div>`,
+          content: `<div class="pdf-page" style="padding:16px;">${content}</div>`,
         });
-
-        // 更新进度
-        if (i % 5 === 0 || i === totalPages) {
-          const progress = 30 + Math.floor((i / totalPages) * 60);
-          onProgress?.(progress);
-          console.log(`[PDF] 已处理 ${i}/${totalPages} 页, 进度: ${progress}%`);
-        }
       } catch (e) {
-        console.error(`[PDF] 解析第 ${i} 页失败:`, e);
-        // 单页解析失败，添加占位符
+        console.error(`[PDF] 第 ${i} 页解析失败:`, e);
         chapters.push({
           id: i - 1,
-          title: `第 ${i} 页 (解析失败)`,
-          content: '<div class="pdf-page" style="padding: 20px; text-align: center; color: #999;">此页面解析失败</div>',
+          title: `第 ${i} 页`,
+          content: '<div style="padding:40px;text-align:center;color:#999;">此页面解析失败</div>',
         });
+      }
+
+      // 更新进度
+      if (i % 5 === 0 || i === totalPages) {
+        const progress = 30 + Math.floor((i / totalPages) * 60);
+        onProgress?.(progress);
       }
     }
 

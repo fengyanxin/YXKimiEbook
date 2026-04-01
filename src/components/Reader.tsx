@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { 
-  ChevronLeft, 
-  ChevronRight, 
-  Settings, 
+import {
+  ChevronLeft,
+  ChevronRight,
+  Settings,
   List,
   Maximize,
-  Minimize
+  Minimize,
+  ScrollText
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -31,13 +32,17 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
   const [showSettings, setShowSettings] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [pageAnimation, setPageAnimation] = useState<'next' | 'prev' | null>(null);
+  // PDF和TXT支持连续滚动模式
+  const [continuousScroll, setContinuousScroll] = useState(
+    book.format === 'pdf' || book.format === 'txt'
+  );
   const contentRef = useRef<HTMLDivElement>(null);
   const readerRef = useRef<HTMLDivElement>(null);
 
   const chapter = book.chapters[currentChapter];
   const theme = THEMES.find(t => t.value === settings.theme) || THEMES[0];
 
-  // 保存阅读进度
+  // 保存阅读进度 + 连续滚动模式下的章节追踪
   useEffect(() => {
     const saveProgress = () => {
       updateReadingProgress(book.id, currentChapter, 0);
@@ -50,7 +55,33 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
     };
 
     saveProgress();
-  }, [currentChapter, book.id]);
+
+    // 连续滚动模式：根据滚动位置更新当前章节
+    if (continuousScroll && contentRef.current) {
+      const container = contentRef.current;
+      const handleScroll = () => {
+        // 找到当前滚动位置对应的章节
+        const chapters = container.querySelectorAll('[data-chapter-index]');
+        const containerRect = container.getBoundingClientRect();
+        const containerCenter = containerRect.top + containerRect.height / 3;
+
+        let activeIndex = 0;
+        chapters.forEach((chapterEl) => {
+          const rect = chapterEl.getBoundingClientRect();
+          if (rect.top <= containerCenter) {
+            activeIndex = parseInt(chapterEl.getAttribute('data-chapter-index') || '0', 10);
+          }
+        });
+
+        if (activeIndex !== currentChapter) {
+          setCurrentChapter(activeIndex);
+        }
+      };
+
+      container.addEventListener('scroll', handleScroll);
+      return () => container.removeEventListener('scroll', handleScroll);
+    }
+  }, [currentChapter, book.id, continuousScroll]);
 
   // 键盘导航
   useEffect(() => {
@@ -103,8 +134,25 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
   const goToChapter = (index: number) => {
     setCurrentChapter(index);
     setShowSidebar(false);
-    contentRef.current?.scrollTo(0, 0);
+    if (continuousScroll) {
+      // 滚动到指定章节
+      setTimeout(() => {
+        const chapterEl = contentRef.current?.querySelector(`[data-chapter-index="${index}"]`);
+        chapterEl?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 100);
+    } else {
+      contentRef.current?.scrollTo(0, 0);
+    }
   };
+
+  // 计算连续滚动模式下的阅读进度
+  const calculateScrollProgress = useCallback(() => {
+    if (!contentRef.current || !continuousScroll) return 0;
+    const container = contentRef.current;
+    const scrollTop = container.scrollTop;
+    const scrollHeight = container.scrollHeight - container.clientHeight;
+    return scrollHeight > 0 ? (scrollTop / scrollHeight) * 100 : 0;
+  }, [continuousScroll]);
 
   const toggleFullscreen = async () => {
     try {
@@ -196,6 +244,22 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
         </div>
 
         <div className="flex items-center gap-1">
+          {/* PDF和TXT支持连续滚动模式切换 */}
+          {(book.format === 'pdf' || book.format === 'txt') && (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => {
+                setContinuousScroll(!continuousScroll);
+                contentRef.current?.scrollTo(0, 0);
+              }}
+              title={continuousScroll ? '切换到分页模式' : '切换到连续滚动'}
+              style={{ color: theme.text }}
+            >
+              <ScrollText className={cn("w-5 h-5", continuousScroll && "text-primary")} />
+            </Button>
+          )}
+
           <Button
             variant="ghost"
             size="icon"
@@ -204,7 +268,7 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
           >
             <Settings className="w-5 h-5" />
           </Button>
-          
+
           <Button
             variant="ghost"
             size="icon"
@@ -217,14 +281,14 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
       </header>
 
       {/* 阅读内容区域 */}
-      <div 
+      <div
         ref={contentRef}
         className="flex-1 overflow-y-auto overflow-x-hidden"
-        style={{ 
+        style={{
           scrollBehavior: 'smooth',
         }}
       >
-        <div 
+        <div
           className={cn(
             "max-w-3xl mx-auto px-4 sm:px-8 py-8 min-h-full",
             getAnimationClass()
@@ -237,62 +301,99 @@ export function Reader({ book, onBack, onUpdateBook, settings, onUpdateSettings 
             paddingRight: `${settings.margin}px`,
           }}
         >
-          {/* 章节标题 */}
-          <h2 
-            className="text-2xl font-bold mb-8 text-center"
-            style={{ fontSize: `${settings.fontSize * 1.5}px` }}
-          >
-            {chapter?.title}
-          </h2>
-          
-          {/* 章节内容 */}
-          <div 
-            className="prose prose-lg max-w-none reader-content"
-            style={{ 
-              color: theme.text,
-            }}
-            dangerouslySetInnerHTML={{ __html: chapter?.content || '' }}
-          />
-          
-          {/* 章节导航 */}
-          <div className="flex items-center justify-between mt-12 pt-8 border-t" style={{ borderColor: `${theme.text}20` }}>
-            <Button
-              variant="outline"
-              onClick={goToPrevChapter}
-              disabled={currentChapter === 0}
-              className="gap-2"
-              style={{ borderColor: `${theme.text}30`, color: theme.text }}
-            >
-              <ChevronLeft className="w-4 h-4" />
-              上一章
-            </Button>
-            
-            <span className="text-sm opacity-60">
-              {currentChapter + 1} / {book.totalChapters}
-            </span>
-            
-            <Button
-              variant="outline"
-              onClick={goToNextChapter}
-              disabled={currentChapter >= book.totalChapters - 1}
-              className="gap-2"
-              style={{ borderColor: `${theme.text}30`, color: theme.text }}
-            >
-              下一章
-              <ChevronRight className="w-4 h-4" />
-            </Button>
-          </div>
+          {/* 连续滚动模式：渲染所有章节 */}
+          {continuousScroll ? (
+            <>
+              {book.chapters.map((ch, index) => (
+                <div key={ch.id} className="mb-16" data-chapter-index={index}>
+                  {/* 章节标题 */}
+                  <h2
+                    className="text-2xl font-bold mb-8 text-center"
+                    style={{ fontSize: `${settings.fontSize * 1.5}px` }}
+                  >
+                    {ch.title}
+                  </h2>
+
+                  {/* 章节内容 */}
+                  <div
+                    className="prose prose-lg max-w-none reader-content"
+                    style={{
+                      color: theme.text,
+                    }}
+                    dangerouslySetInnerHTML={{ __html: ch.content || '' }}
+                  />
+                </div>
+              ))}
+              {/* 连续滚动模式底部提示 */}
+              <div className="text-center text-sm opacity-50 py-8">
+                — 已全部加载完成 —
+              </div>
+            </>
+          ) : (
+            <>
+              {/* 分页模式：渲染当前章节 */}
+              {/* 章节标题 */}
+              <h2
+                className="text-2xl font-bold mb-8 text-center"
+                style={{ fontSize: `${settings.fontSize * 1.5}px` }}
+              >
+                {chapter?.title}
+              </h2>
+
+              {/* 章节内容 */}
+              <div
+                className="prose prose-lg max-w-none reader-content"
+                style={{
+                  color: theme.text,
+                }}
+                dangerouslySetInnerHTML={{ __html: chapter?.content || '' }}
+              />
+
+              {/* 章节导航 */}
+              <div className="flex items-center justify-between mt-12 pt-8 border-t" style={{ borderColor: `${theme.text}20` }}>
+                <Button
+                  variant="outline"
+                  onClick={goToPrevChapter}
+                  disabled={currentChapter === 0}
+                  className="gap-2"
+                  style={{ borderColor: `${theme.text}30`, color: theme.text }}
+                >
+                  <ChevronLeft className="w-4 h-4" />
+                  上一章
+                </Button>
+
+                <span className="text-sm opacity-60">
+                  {currentChapter + 1} / {book.totalChapters}
+                </span>
+
+                <Button
+                  variant="outline"
+                  onClick={goToNextChapter}
+                  disabled={currentChapter >= book.totalChapters - 1}
+                  className="gap-2"
+                  style={{ borderColor: `${theme.text}30`, color: theme.text }}
+                >
+                  下一章
+                  <ChevronRight className="w-4 h-4" />
+                </Button>
+              </div>
+            </>
+          )}
         </div>
       </div>
 
       {/* 底部进度条 */}
-      <div 
+      <div
         className="h-1 bg-black/10"
         style={{ backgroundColor: `${theme.text}10` }}
       >
-        <div 
+        <div
           className="h-full bg-primary transition-all duration-300"
-          style={{ width: `${((currentChapter + 1) / book.totalChapters) * 100}%` }}
+          style={{
+            width: continuousScroll
+              ? `${calculateScrollProgress()}%`
+              : `${((currentChapter + 1) / book.totalChapters) * 100}%`
+          }}
         />
       </div>
 
