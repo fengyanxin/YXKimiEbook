@@ -2,7 +2,7 @@ import JSZip from 'jszip';
 import type { Book, Chapter } from '@/types/ebook';
 
 // 解析EPUB文件
-export async function parseEpub(file: File, onProgress?: (progress: number) => void): Promise<Book> {
+export async function parseEpub(file: File, _onProgress?: (progress: number) => void): Promise<Book> {
   console.log('[EPUB] 开始解析文件:', file.name);
   const arrayBuffer = await file.arrayBuffer();
   const zip = await JSZip.loadAsync(arrayBuffer);
@@ -377,7 +377,7 @@ export async function parseTxt(file: File, onProgress?: (progress: number) => vo
 
   // 读取文件为 ArrayBuffer 以便尝试不同编码
   const arrayBuffer = await file.arrayBuffer();
-  console.log('[TXT] 文件大小:', arrayBuffer.length, 'bytes');
+  console.log('[TXT] 文件大小:', arrayBuffer.byteLength, 'bytes');
 
   // 尝试多种编码解码
   const encodings = ['utf-8', 'gbk', 'gb2312', 'big5', 'utf-16le', 'utf-16be'];
@@ -398,7 +398,8 @@ export async function parseTxt(file: File, onProgress?: (progress: number) => vo
       }
     } catch (e) {
       // 该编码无法解码，尝试下一个
-      console.log('[TXT] 编码', encoding, '尝试失败:', e.message);
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      console.log('[TXT] 编码', encoding, '尝试失败:', errorMsg);
     }
   }
 
@@ -492,7 +493,7 @@ export async function parseTxt(file: File, onProgress?: (progress: number) => vo
   onProgress?.(90);
 
   // 将纯文本转换为HTML
-  chapters.forEach((chapter, index) => {
+  chapters.forEach((chapter, _index) => {
     // 处理段落（连续空行表示段落）
     const paragraphs = chapter.content.split(/\n{2,}/);
     const htmlContent = paragraphs.map(p => {
